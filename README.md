@@ -13,6 +13,8 @@ You can also update an existing latent diffusion environment by running
 
 `pip install -e`
 
+Since torch._six is deprecated with the versions we use, replace `from torch._six import string_classes` with `string_classes = str` in `src/taming-transformers/taming/data/utils.py`
+
 # Get the models
 
 Running the following script downloads und extracts all available pretrained autoencoding models.
