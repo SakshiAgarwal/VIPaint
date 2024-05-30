@@ -10,6 +10,7 @@ A suitable conda environment named ldm can be created and activated with:
 You can also update an existing latent diffusion environment by running
 
 `pip install transformers==4.19.2 pytorch-lightning==1.6.5 numpy==1.23.5 pillow==9.5.0 torchmetrics==0.6.0 diffusers invisible-watermark kornia==0.6.4`
+
 `pip install -e`
 
 # Get the models
@@ -28,7 +29,7 @@ The LDMs can jointly be downloaded and extracted via
 
 `bash scripts/download_models.sh`
 
-The models can then be found in models/ldm/<model_spec>. For LSUN churches, this is models/ldm/lsun_churches256
+The models can then be found in `models/ldm/<model_spec>`. For LSUN churches, this is models/ldm/lsun_churches256
 
 Please follow [Latent Diffusion Model](https://github.com/CompVis/latent-diffusion) for more information. 
 
