@@ -3,6 +3,7 @@ Image Inpainting using (latent) Diffusion Models as Priors using Variational Inf
 
 # Requirements
 1) Clone the repository
+
 `git clone `
 
 `cd vipaint`
