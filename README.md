@@ -2,7 +2,12 @@
 Image Inpainting using (latent) Diffusion Models as Priors using Variational Inference
 
 # Requirements
-A suitable conda environment named ldm can be created and activated with:
+1) Clone the repository
+`git clone `
+
+`cd vipaint`
+
+2) A suitable conda environment named ldm can be created and activated with:
 
 `conda env create -f environment.yaml`
 `conda activate ldm`
@@ -39,6 +44,9 @@ Please follow [Latent Diffusion Model](https://github.com/CompVis/latent-diffusi
 
 By using a variational inference, the diffusion model can be used for different tasks such as image inpainting. We provide a script to perform image inpainting with Stable Diffusion.
 
-The following describes an example where a rough sketch made in Pinta is converted into a detailed artwork.
+The following describes an example where a masked image is filled with consistent, multiple inpaintings. Give it a moment to fit the posterior!
+
+python scripts/vipaint.py --masked-img <path-to-img.jpg> --mask --strength 0.8
+
 
 
