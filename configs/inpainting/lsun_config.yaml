@@ -1,0 +1,44 @@
+data:
+  name: ldm.data.lsun.LSUNChurchesValidation
+  seq: {'random': [0, 100], 'half': [100, 200], 'val': [200, 300]}
+  file_seq: data_sequence/100_sequence.pkl
+  file_name: None
+  channels: 3
+
+autoencoder: /scratch/sakshi/diffusion_inpainting/models/first_stage_models/kl-f8/config.yaml
+diffusion: /scratch/sakshi/diffusion_inpainting/models/ldm/lsun_churches256/config.yaml
+diffusion_model: /scratch/sakshi/diffusion_inpainting/models/ldm/lsun_churches256/model.ckpt
+working_dir: results/lsun
+conditional_model: False
+
+mask_opt:
+  mask_type: random #half 
+  # mask_len_range: !!python/tuple [128, 129]  # for box
+  mask_prob_range: !!python/tuple [0.0, 1.0]  # for random
+  image_size: 256
+
+loss: 
+  name: ldm.guided_diffusion.losses.LPIPSWithDiscriminator
+  first_stage: kl
+  unconditional_guidance_scale: 1
+  eta: 0.4
+  beta: 100
+  batch_size: 10
+  iterations: 100
+  t_steps_hierarchy:  [ 500, 400, 300, 250, 200 ] 
+  rho: 2
+  lr_init_gamma: 0.01
+
+init:
+  var_scale: 1
+  mean_scale: 1
+  prior_scale: 2
+  mean_scale_top: 0.1
+
+sampling:
+  method: ps
+  scale: 2
+  n_samples: 10
+  unconditional_guidance_scale: 1
+
+  

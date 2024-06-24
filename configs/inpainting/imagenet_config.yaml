@@ -1,0 +1,46 @@
+data:
+  name: ldm.data.imagenet.ImageNetValidation
+  seq: {'half': [200, 300], 'box': [300, 350], 'random': [350, 450], 'val': [0, 50]} 
+  file_seq: None
+  file_name: ldm/data/Imagenet_valid_new.npz 
+  channels: 3
+
+autoencoder: /scratch/sakshi/diffusion_inpainting/models/first_stage_models/vq-f4/config.yaml
+diffusion: configs/latent-diffusion/cin256-v2.yaml
+diffusion_model: /scratch/sakshi/diffusion_inpainting/models/ldm/cin256-v2/model.ckpt
+working_dir: results/imagenet
+conditional_model: True
+
+mask_opt:
+  mask_type: box
+  mask_len_range: !!python/tuple [64, 65]  # for box
+  mask_prob_range: !!python/tuple [0.3, 0.7]  # for random
+  image_size: 256
+
+mask_files: {'random': masks/mask_100_imagenet.npy, "half": masks/mask_random_half_100_imagenet.npy, 
+              "box": masks/box_100_imagenet.npy } # validation files : {'random': masks/mask_20_imagenet.npy, "half": masks/mask_random_half_20_imagenet.npy } 
+
+loss: 
+  name: ldm.guided_diffusion.loss_vq.VQLPIPSWithDiscriminator
+  first_stage: vq
+  unconditional_guidance_scale: 1
+  eta: 0.2 
+  beta: 700 
+  batch_size: 5
+  iterations: 150
+  t_steps_hierarchy:  [550, 500, 450, 400] 
+  rho: 7
+  lr_init_gamma: 0.01
+
+init:
+  var_scale: 0.7
+  mean_scale: 1 
+  mean_scale_top: 0.8 
+  prior_scale: 4
+
+sampling:
+  method: ps
+  scale:  2
+  n_samples: 5
+  unconditional_guidance_scale: 3
+
