@@ -1,12 +1,15 @@
 # VIPaint
 Image Inpainting using (latent) Diffusion Models as Priors using Variational Inference
 
+![Plot1](https://github.com/SakshiAgarwal/VIPaint/blob/main/results/working_of_VIPaint.png)
+
+
 # Requirements
 1) Clone the repository
 
-`git clone `
+`git clone https://github.com/SakshiAgarwal/VIPaint.git`
 
-`cd vipaint`
+`cd VIPaint`
 
 2) A suitable conda environment named ldm can be created and activated with:
 
@@ -45,9 +48,27 @@ Please follow [Latent Diffusion Model](https://github.com/CompVis/latent-diffusi
 
 By using a variational inference, the diffusion model can be used for different tasks such as image inpainting. We provide a script to perform image inpainting with Stable Diffusion.
 
-The following describes an example where a masked image is filled with consistent, multiple inpaintings. Give it a moment to fit the posterior!
+The following describes how to run VIPaint for ImageNet (for LSUN use configs/inpainting/lsun_config.yaml) where a masked image is filled with consistent, multiple inpaintings. Give it a moment to fit the posterior!
 
-python scripts/vipaint.py --masked-img <path-to-img.jpg> --mask --strength 0.8
+`python vipaint.py --inpaint_config="configs/inpainting/imagenet_config.yaml" --working_directory='results/imagenet/random_all/'`
+
+# Evaluation 
+
+To evaluate the inpaintings, we calculate the KID, LPIPs score and you can run the following:
+
+`python evaluation.py --inpaint_config="configs/inpainting/imagenet_config.yaml" --working_directory='results/imagenet/random_all/'`
+
+# Consistency
+
+![Plot1](https://github.com/SakshiAgarwal/VIPaint/blob/main/results/consistency_imagenet_256.png)
+
+![Plot1](https://github.com/SakshiAgarwal/VIPaint/blob/main/results/consistency_lsun.png)
+
+
+# Variety
+When you input different label to the masked image, VIPaint can produce realistic and consistent images. 
+
+![Plot1](https://github.com/SakshiAgarwal/VIPaint/blob/main/results/variety_labels.png)
 
 
 
