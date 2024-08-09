@@ -22,9 +22,9 @@ def load_yaml(file_path: str) -> dict:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--inpaint_config', type=str, default='configs/inpainting/imagenet_config.yaml') #lsun_config, imagenet_config
-    parser.add_argument('--working_directory', type=str, default='results/imagenet/box_labels/')
+    parser.add_argument('--working_directory', type=str, default='results/')
     parser.add_argument('--gpu', type=int, default=0)
-    args = parser.parse_args()
+    args = parser.parse_args("")
    
     # logger
     logger = get_logger()
