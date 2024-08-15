@@ -40,7 +40,7 @@ The LDMs can jointly be downloaded and extracted via
 
 `bash scripts/download_models.sh`
 
-The models can then be found in `models/ldm/<model_spec>`. For LSUN churches, this is models/ldm/lsun_churches256
+The models can then be found in `models/ldm/<model_spec>`. For LSUN churches, this is models/ldm/lsun_churches256. For Imagenet, please refer to [Class-Conditional Synthesis with Latent Diffusion Models]{https://colab.research.google.com/github/CompVis/latent-diffusion/blob/main/scripts/latent_imagenet_diffusion.ipynb#scrollTo=NHgUAp48qwoG} ipynb file. 
 
 Please follow [Latent Diffusion Model](https://github.com/CompVis/latent-diffusion) for more information. 
 
@@ -63,7 +63,6 @@ To evaluate the inpaintings, we calculate the KID, LPIPs score and you can run t
 ![Plot1](https://github.com/SakshiAgarwal/VIPaint/blob/main/results/consistency_imagenet_256.png)
 
 ![Plot1](https://github.com/SakshiAgarwal/VIPaint/blob/main/results/consistency_lsun.png)
-
 
 # Variety
 When you input different label to the masked image, VIPaint can produce realistic and consistent images. 
