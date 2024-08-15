@@ -5,6 +5,7 @@ data:
   file_name: ldm/data/Imagenet_valid_new.npz 
   channels: 3
 
+## Pre-trained models 
 autoencoder: /scratch/sakshi/diffusion_inpainting/models/first_stage_models/vq-f4/config.yaml
 diffusion: configs/latent-diffusion/cin256-v2.yaml
 diffusion_model: /scratch/sakshi/diffusion_inpainting/models/ldm/cin256-v2/model.ckpt
@@ -23,14 +24,14 @@ mask_files: {'random': masks/mask_100_imagenet.npy, "half": masks/mask_random_ha
 loss: 
   name: ldm.guided_diffusion.loss_vq.VQLPIPSWithDiscriminator
   first_stage: vq
-  unconditional_guidance_scale: 1
-  eta: 0.2 
-  beta: 700 
-  batch_size: 5
-  iterations: 150
-  t_steps_hierarchy:  [550, 500, 450, 400] 
-  rho: 7
-  lr_init_gamma: 0.01
+  unconditional_guidance_scale: 1 # classifier-free guidance
+  eta: 0.2                        # DDIM sampler 
+  rho: 7                          # descretize time for prior loss
+  beta: 700                       # weight for prior & posterior losses
+  batch_size: 5                   # samples used for optimization
+  iterations: 150                 # max iteration until VI pparameters are optimized
+  t_steps_hierarchy:  [550, 500, 450, 400]  # Timesteps VIPaint is defined over
+  lr_init_gamma: 0.01             # learning rate
 
 init:
   var_scale: 0.7
@@ -38,9 +39,10 @@ init:
   mean_scale_top: 0.8 
   prior_scale: 4
 
+# sample following DPS 
 sampling:
   method: ps
-  scale:  2
+  scale:  2                     # weight hyper-parameter for likelihood 
   n_samples: 5
   unconditional_guidance_scale: 3
 
