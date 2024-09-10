@@ -4,40 +4,50 @@ data:
   file_seq: data_sequence/100_sequence.pkl
   file_name: None
   channels: 3
+  image_size: 256
+  latent_size: 32
+  latent_channels: 4
 
 autoencoder: /scratch/sakshi/diffusion_inpainting/models/first_stage_models/kl-f8/config.yaml
 diffusion: /scratch/sakshi/diffusion_inpainting/models/ldm/lsun_churches256/config.yaml
 diffusion_model: /scratch/sakshi/diffusion_inpainting/models/ldm/lsun_churches256/model.ckpt
 working_dir: results/lsun
 conditional_model: False
+name: ldm.guided_diffusion.losses.LPIPSWithDiscriminator
 
 mask_opt:
   mask_type: random #half 
   # mask_len_range: !!python/tuple [128, 129]  # for box
-  mask_prob_range: !!python/tuple [0.0, 1.0]  # for random
+  mask_prob_range: !!python/tuple [0.3, 0.7]  # for random
   image_size: 256
 
-loss: 
-  name: ldm.guided_diffusion.losses.LPIPSWithDiscriminator
+mask_files: {'random': masks/mask_lsun_100.npy, "half": masks/mask_random_half_100.npy, 
+              "box": masks/box_100.npy } # validation files : {'random': masks/mask_20_imagenet.npy, "half": masks/mask_random_half_20_imagenet.npy } 
+posterior: "hierarchical" 
+
+hierarchical: 
   first_stage: kl
   unconditional_guidance_scale: 1
-  eta: 0.4
-  beta: 100
+  eta: 0.2 #0.4
+  beta_1: 100 #70 #700, prior #100 for 300
+  beta_2: 100 #70 #700, posterior #20 for 300
   batch_size: 10
-  iterations: 100
-  t_steps_hierarchy:  [ 500, 400, 300, 250, 200 ] 
-  rho: 2
+  iterations: 50 #100 #250
+  t_steps_hierarchy: [550,  400] #, 300, 200 works with 300 # 300, 250, 200 250, 200 #  500, 450,  500, 450, 500, 450, 
+  rho: 7 #2
   lr_init_gamma: 0.01
+  mean_scale : 1
+  mean_scale_top: 0.1 #0.1, 0.8 is imagenet
 
 init:
-  var_scale: 1
+  var_scale: 0.7 # 0.7 #1 for lsun
   mean_scale: 1
-  prior_scale: 2
-  mean_scale_top: 0.1
+  prior_scale: 4 #4
+  mean_scale_top: 0.8 #0.1
 
 sampling:
   method: ps
-  scale: 2
+  scale: 2 #2
   n_samples: 10
   unconditional_guidance_scale: 1
 

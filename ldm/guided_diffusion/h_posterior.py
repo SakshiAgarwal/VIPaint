@@ -17,16 +17,22 @@ import time
 from ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, make_ddim_timesteps, extract_into_tensor, noise_like
 import wandb
 
+
 class HPosterior(object):
-    def __init__(self, model, vae_loss, t_steps_hierarchy, eta=0.4, z0_size=32, num_hierarchy_steps=5, schedule="linear", first_stage = "kl", **kwargs):
+    def __init__(self, model, vae_loss, t_steps_hierarchy, eta=0.4, z0_size=32, img_size = 256, latent_channels = 3,
+                 num_hierarchy_steps=5, schedule="linear", first_stage = "kl", posterior = "hierarchical", **kwargs):
         super().__init__()
         self.model = model                  #prior noise prediction model
         self.schedule = schedule            #noise schedule the prior was trained on
         self.vae_loss = vae_loss            #vae loss followed during training
         self.eta = eta                      #eta used to produce faster, clean samples 
         self.first_stage= first_stage       #first stage training procedure: kl or vq loss
+        self.posterior = posterior 
         self.t_steps_hierarchy = np.array(t_steps_hierarchy)   #time steps for hierachical posterior
         self.z0size = z0_size               #dimension of latent space variables z
+        self.img_size = img_size #512 #
+        self.latent_size = z0_size  #128 #
+        self.latent_channels = latent_channels
 
     def q_given_te(self, t, s, shape, zeta_t_star=None):
         if zeta_t_star is not None:  
@@ -163,7 +169,7 @@ class HPosterior(object):
   
         return {"loss" : kl, "sample" : z_te, "intermediate_mus" : intermediate_mus}
 
-    def recon_loss(self, samples_pixel, x0_pixel, mask_pixel):
+    def recon_loss(self, samples_pixel, x0_pixel, mask_pixel, operator=None):
         global_step = 0
         if self.first_stage == "kl":
             nll_loss, _ = self.vae_loss(x0_pixel, samples_pixel, mask_pixel, 0, global_step,
@@ -172,8 +178,8 @@ class HPosterior(object):
             qloss = torch.tensor([0.]).cuda()
             nll_loss, _ = self.vae_loss(qloss, x0_pixel, samples_pixel, mask_pixel, 0, 0,
                                         last_layer=self.model.first_stage_model.get_last_layer(), split="val",
-                                        predicted_indices=None)
-        nll_loss = nll_loss/1000
+                                        predicted_indices=None, operator=operator)
+        #nll_loss = nll_loss/1000
         return { "loss" : nll_loss}
 
     def prior_preds(self, z_t, t_cur, cond, a_t, a_prev, sigma_t, unconditional_conditioning, unconditional_guidance_scale ):
@@ -202,8 +208,8 @@ class HPosterior(object):
         sigma_pos = torch.exp(0.5*logvar_pos)
         kl_t, t0, q_entropy = torch.zeros(z_t.shape[0]).cuda(), 100, 0
         num_steps = len(self.t_steps_hierarchy)
-        intermediate_samples = np.zeros((num_steps, 1, 256, 256, 3))
-        intermediate_preds = np.zeros((num_steps, 1, 256, 256, 3))
+        intermediate_samples = np.zeros((num_steps, 1, self.img_size, self.img_size, 3))
+        intermediate_preds = np.zeros((num_steps, 1, self.img_size, self.img_size, 3))
         b = z_t.shape[0]
         with torch.no_grad():
             recon = self.model.decode_first_stage(z_t)
@@ -251,33 +257,34 @@ class HPosterior(object):
                  "intermediates" : intermediate_samples, "interim_preds"  :intermediate_preds, 
                  "intermediate_mus" : intermediate_mus} 
 
-    def grad_and_value(self, x_prev, x_0_hat, measurement, mask_pixel):
-        nll_loss = self.recon_loss(x_0_hat, measurement, mask_pixel)["loss"]
+    def grad_and_value(self, x_prev, x_0_hat, measurement, mask_pixel, operator):
+        nll_loss = torch.mean(self.recon_loss(x_0_hat, measurement, mask_pixel, operator)["loss"])
         norm_grad = torch.autograd.grad(outputs=nll_loss, inputs=x_prev)[0] 
         return norm_grad, nll_loss
 
-    def conditioning(self, x_prev, x_t, x_0_hat, measurement, mask_pixel, scale,  **kwargs):
+    def conditioning(self, x_prev, x_t, x_0_hat, measurement, mask_pixel, scale, operator,  **kwargs):
         norm_grad, norm = self.grad_and_value(x_prev=x_prev, x_0_hat=x_0_hat, 
-                                            measurement=measurement, mask_pixel=mask_pixel)
+                                            measurement=measurement, mask_pixel=mask_pixel, operator=operator)
         x_t -= norm_grad*scale 
         return x_t, norm
     
     def sample(self, scale, eta, mu_pos, logvar_pos, gamma,  
                mask_pixel, y, n_samples=100,  cond=None, 
                unconditional_conditioning=None, unconditional_guidance_scale=1, 
-               batch_size=10, dir_name="temp/", temp=1):
+               batch_size=10, dir_name="temp/", temp=1, 
+               samples_iteration=0, operator = None):
         sigma_pos = torch.exp(0.5*logvar_pos)
         t0 = 100 
         num_steps = len(self.t_steps_hierarchy)
-        intermediate_samples = np.zeros((num_steps, 1, 256, 256, 3))
-        intermediate_preds = np.zeros((num_steps, 1, 256, 256, 3))
-        intermediate_mus = np.zeros((num_steps, 1, 256, 256, 3))
+        intermediate_samples = np.zeros((num_steps, 1, self.img_size, self.img_size, 3))
+        intermediate_preds = np.zeros((num_steps, 1, self.img_size, self.img_size, 3))
+        intermediate_mus = np.zeros((num_steps, 1, self.img_size, self.img_size, 3))
         alphas = self.h_alphas
 
         ##batch your sample generation
         all_images = []
         t0 = time.time()
-        save_dir = os.path.join(dir_name , "samples_" + str(scale))
+        save_dir = os.path.join(dir_name , "samples_50_"+ str(scale) ) #50_ #"samples_" + str(scale)
         os.makedirs(save_dir, exist_ok=True)
         for _ in trange(n_samples // batch_size, desc="Sampling Batches"):
             mu_10 = torch.Tensor.repeat(mu_pos[0], [batch_size,1,1,1])
@@ -288,6 +295,7 @@ class HPosterior(object):
                 recon = self.model.decode_first_stage(z_t)
                 intermediate_samples[0] = to_img(recon)[0]
                 for i, (t_cur, t_next) in enumerate(zip(self.t_steps_hierarchy[:-1], self.t_steps_hierarchy[1:])):
+                    print(t_cur)
                     t_hat_cur = torch.ones(batch_size).cuda() * (t_cur ) 
                     a_t =  torch.full((batch_size, 1, 1, 1), alphas[i]).cuda()
                     a_prev = torch.full((batch_size, 1, 1, 1), alphas[i+1]).cuda()
@@ -301,10 +309,12 @@ class HPosterior(object):
                     std_pos = sigma_pos[i+1]
                     #Sample z_t
                     z_t =  mean_t_1 + std_pos * torch.randn_like(mean_t_1)  
+                    
                     with torch.no_grad():
                         pred_x = self.model.decode_first_stage(pred_x0)
                         save_samples(save_dir, pred_x, k=None, num_to_save = 1, file_name =  f'sample_{i}.png')
                     
+
             timesteps = np.flip(np.arange(0, self.t_steps_hierarchy[-1].cpu().numpy(), 1))
             timesteps = np.concatenate((self.t_steps_hierarchy[-1].cpu().reshape(1), timesteps))
             ##Sample using DPS algorithm 
@@ -320,13 +330,14 @@ class HPosterior(object):
                 pred_x = self.model.decode_first_stage(pred_x0)
                 z_t, _ = self.conditioning(x_prev = z_t , x_t = z_next, 
                                               x_0_hat = pred_x, measurement = y, 
-                                              mask_pixel=mask_pixel, scale=scale)
+                                              mask_pixel=mask_pixel, scale=scale, operator=operator)
                 z_t = z_t.detach_()
+                
                 if i%50 == 0:
                     with torch.no_grad():
                         recons = self.model.decode_first_stage(pred_x0)
                         save_samples(save_dir, recons, k=None, num_to_save = 1, file_name =  f'det_{step}.png')
-
+                
             z_0 = pred_x0 
             with torch.no_grad():
                 recon = self.model.decode_first_stage(z_0)
@@ -336,20 +347,33 @@ class HPosterior(object):
             all_images.append(custom_to_np(recons))
 
         t1 = time.time()
+        
         all_img = np.concatenate(all_images, axis=0)
         all_img = all_img[:n_samples]
         shape_str = "x".join([str(x) for x in all_img.shape])
         nppath = os.path.join(save_dir, f"{shape_str}-samples.npz")
         np.savez(nppath, all_img, t1-t0)
-        
-        save_inpaintings(save_dir, recons, y, mask_pixel, num_to_save = batch_size)
 
+        '''
+        recon_in = y*(mask_pixel) + ( 1-mask_pixel)*recons
+        recon_in = to_img(recon_in)
+        image_path = os.path.join(save_dir, str(samples_iteration) + ".png")
+        image_np = recon_in.astype(np.uint8)[0]
+        PIL.Image.fromarray(image_np, 'RGB').save(image_path)
+        '''
+        file_name_img = None
+
+        if operator is None:
+            save_inpaintings(save_dir, recons, y, mask_pixel, num_to_save = batch_size) #recons
+        else: 
+            save_samples(save_dir, recons, None, batch_size)
         return 
 
     def fit(self, lambda_, cond, shape, quantize_denoised=False, mask_pixel = None, 
             y = None, log_every_t=100, unconditional_guidance_scale=1., 
-            unconditional_conditioning=None, dir_name = None, kl_weight=50, 
-            debug=False, wdb=False, iterations=200, batch_size = 10, lr_init_gamma=0.01): 
+            unconditional_conditioning=None, dir_name = None, kl_weight_1=50, kl_weight_2 = 50,
+            debug=False, wdb=False, iterations=200, batch_size = 10, lr_init_gamma=0.01, 
+            operator=None): 
                 
         if wdb: 
             wandb.init(project='LDM', dir = '/scratch/sakshi/wandb-cache')
@@ -360,10 +384,12 @@ class HPosterior(object):
         mu_pos, logvar_pos, gamma = params_to_fit
         optimizers, schedulers = get_optimizers(mu_pos, logvar_pos, gamma, lr_init_gamma)
         rec_loss_all, prior_loss_all, posterior_loss_all =[], [], []
+        loss_all = []
         mu_all, logvar_all, gamma_all = [], [], []
         for k in range(iterations):
             if k%100==0: print(k)
-            intermediate_mus = np.zeros((len(self.t_steps_hierarchy), 64, 64, 3))
+            intermediate_mus = np.zeros((len(self.t_steps_hierarchy), self.latent_size, self.latent_size, self.latent_channels))
+
             for opt in optimizers: opt.zero_grad()
             stats_prior = self.loss_prior(mu_pos[0], logvar_pos[0], cond=cond, 
                                           unconditional_conditioning=unconditional_conditioning, 
@@ -377,24 +403,25 @@ class HPosterior(object):
                                                     K=batch_size, iteration=k, intermediate_mus=stats_prior["intermediate_mus"])
             sample = self.model.decode_first_stage(stats_posterior["sample"])
             
-            stats_recon = self.recon_loss(sample, y, mask_pixel)
-            loss_total = torch.mean(kl_weight*stats_prior["loss"] \
-                                    + kl_weight*stats_posterior["loss"] + stats_recon["loss"] ) #
+            stats_recon = self.recon_loss(sample, y, mask_pixel, operator)
+            num_pixels = 3*256*256 #(1000/num_pixels)* (1000/num_pixels)*
+            loss_total = torch.mean(kl_weight_1*stats_prior["loss"] \
+                                    + kl_weight_2*stats_posterior["loss"] + stats_recon["loss"] ) #
             loss_total.backward()
             for opt in optimizers: opt.step()
             for sch in schedulers: sch.step()
             
             rec_loss_all.append(torch.mean(stats_recon["loss"].detach()).item())
-            prior_loss_all.append(torch.mean(kl_weight*stats_prior["loss"].detach()).item())
-            posterior_loss_all.append(torch.mean(kl_weight*stats_posterior["loss"].detach()).item())
+            prior_loss_all.append(torch.mean(kl_weight_1*stats_prior["loss"].detach()).item())
+            posterior_loss_all.append(torch.mean(kl_weight_2*stats_posterior["loss"].detach()).item())
             mu_all.append(torch.mean(mu_pos.detach()).item())
             logvar_all.append(torch.mean(logvar_pos.detach()).item())
             gamma_all.append(torch.mean(torch.sigmoid(gamma).detach()).item())                   
             sample_np = to_img(sample).astype(np.uint8)
-            
+            loss_all.append(loss_total.detach().item())
             if wdb:
                 wandb.log(dict(total_loss=loss_total.detach().item(),
-                            kl = torch.mean(kl_weight*stats_prior["loss"]).detach().item(),
+                            kl = torch.mean(kl_weight_1*stats_prior["loss"]).detach().item(),
                             dec_loss= torch.mean(stats_recon["loss"]).detach().item(),
                             intermediate_samples = [wandb.Image(image) for image in stats_posterior["intermediates"]],
                             intermediate_mus = [wandb.Image(image) for image in stats_posterior["intermediate_mus"]],
@@ -402,14 +429,16 @@ class HPosterior(object):
                             params = [wandb.Image(image) for image in mu_pos.detach()],
                             gamma = [wandb.Image(image) for image in gamma.detach()], 
                             std = [wandb.Image(torch.exp(0.5*image)) for image in logvar_pos.detach()],
-                            klt= torch.mean(kl_weight*stats_posterior["loss"]).detach().item(),
+                            klt= torch.mean(kl_weight_2*stats_posterior["loss"]).detach().item(),
                             lr=optimizers[0].state_dict()['param_groups'][0]['lr'],
                             std0=torch.mean(torch.exp(0.5*logvar_pos[0])).detach(), 
                             samples = [wandb.Image(image) for image in sample_np],
                             ))
-                
+            
             save_plot(dir_name, [rec_loss_all, prior_loss_all, posterior_loss_all],
-                          ["Recon loss", "Prior loss (>T_e)", "Posterior loss (>T_s)"], "loss.png")
+                          ["Recon loss", "Diffusion loss", "Hierarchical loss"], "loss.png")
+            save_plot(dir_name, [loss_all],
+                          ["Total Loss"], "loss_t.png")
             save_plot(dir_name, [mu_all],
                           ["mean"], "mean.png") 
             save_plot(dir_name, [logvar_all],
@@ -417,15 +446,15 @@ class HPosterior(object):
             save_plot(dir_name, [gamma_all],
                           ["gamma"], "gamma.png") 
             
-            if k%log_every_t == 0 or k == iterations - 1:
-                save_samples(os.path.join(dir_name , "progress"), sample, k, 5)
+            if k%log_every_t == 0 or  k == iterations - 1:
+                save_samples(os.path.join(dir_name , "progress"), sample, k, batch_size)
                 save_samples(os.path.join(dir_name , "mus"), stats_posterior["intermediate_mus"], k,
                               len(stats_posterior["intermediate_mus"]))
                 
-                save_inpaintings(os.path.join(dir_name , "progress_inpaintings"), sample, y,
-                                  mask_pixel, k, num_to_save = 5)
+                #save_inpaintings(os.path.join(dir_name , "progress_inpaintings"), sample, y,
+                #                  mask_pixel, k, num_to_save = 5)
                 save_params(os.path.join(dir_name , "params"), mu_pos, logvar_pos, gamma,k)
-                
+            
             gc.collect()
         return 
     

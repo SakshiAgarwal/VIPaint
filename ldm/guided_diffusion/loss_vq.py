@@ -69,6 +69,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
                                                  use_actnorm=use_actnorm,
                                                  ndf=disc_ndf
                                                  ).apply(weights_init).cuda()
+        self.discriminator.eval()
         self.discriminator_iter_start = disc_start
         if disc_loss == "hinge":
             self.disc_loss = hinge_d_loss
@@ -96,23 +97,50 @@ class VQLPIPSWithDiscriminator(nn.Module):
         return d_weight
 
     def forward(self, codebook_loss, inputs, reconstructions, mask, optimizer_idx,
-                global_step, last_layer=None, cond=None, split="train", predicted_indices=None):
+                global_step, last_layer=None, cond=None, split="train", predicted_indices=None, 
+                operator=None, noiser = None):
         
         #if not exists(codebook_loss):
         #    codebook_loss = torch.tensor([0.]).to(inputs.device)
         #rec_loss = torch.abs(inputs.contiguous() - reconstructions.contiguous())
-        rec_loss = self.pixel_loss(inputs.contiguous()*mask, reconstructions.contiguous()*mask)
+        '''
+        if operator is not None: x = operator.forward(reconstructions)
+        else: x = reconstructions.contiguous()
+        rec_loss = torch.abs(inputs - x)
+        '''
+        #rec_loss = torch.sum(rec_loss, dim=[1,2,3])
+        #rec_loss = torch.linalg.norm(difference)
+        if operator is not None : x = operator.forward(reconstructions)
+        else : 
+            x = reconstructions.contiguous()*mask
+            inputs = inputs.contiguous()*mask
+        rec_loss = self.pixel_loss(inputs,x)
+        std = 0.566 #+ 0.05
+        
         #rec_loss = torch.abs(inputs.contiguous()*(mask) - reconstructions.contiguous()*(mask))
+        #nll_loss = torch.linalg.norm(rec_loss)
+        #num_obs = torch.sum(mask)
+        
         if self.perceptual_weight > 0:
-            p_loss = self.perceptual_loss(inputs.contiguous()*mask, reconstructions.contiguous()*mask)
-            rec_loss = rec_loss + self.perceptual_weight * p_loss
+            if operator is None:
+                p_loss = self.perceptual_loss(mask*inputs.contiguous().float(), mask*reconstructions.contiguous().float())
+            else: 
+                p_loss = torch.tensor([0.0])
+            #    p_loss = self.perceptual_loss(inputs.contiguous().float(), reconstructions.contiguous().float())
+
+            rec_loss = rec_loss #+  self.perceptual_weight * p_loss #.reshape(rec_loss.shape[0]) # 
         else:
             p_loss = torch.tensor([0.0])
-
-        std = 0.566
+        
+        #rec_loss = torch.mean(rec_loss, dim =[1,2,3])
+        
         nll_loss =  rec_loss /(2*std**2) #+ 2* torch.log(std) #+ self.logvar
-        #nll_loss = rec_loss
-        nll_loss = torch.sum(nll_loss) / nll_loss.shape[0]
+        nll_loss = 100*torch.mean(nll_loss) +  100*self.perceptual_weight * p_loss.squeeze() #/ (nll_loss.shape[0]) #num_obs
+        
+        #rec_loss = torch.sum(rec_loss, dim=[1,2,3]) / (torch.sum(mask)*3) #*1000 #rec_loss.shape[0]*
+        
+        #nll_loss = torch.mean(rec_loss)
+        
         #nll_loss = torch.mean(nll_loss) + self.codebook_weight * codebook_loss.mean()
         return nll_loss, nll_loss
         # now the GAN part
@@ -124,8 +152,9 @@ class VQLPIPSWithDiscriminator(nn.Module):
             else:
                 assert self.disc_conditional
                 logits_fake = self.discriminator(torch.cat((reconstructions.contiguous(), cond), dim=1))
-            g_loss = -torch.mean(logits_fake)
-
+            g_loss = -torch.mean(logits_fake) #200*
+            
+            '''
             try:
                 d_weight = self.calculate_adaptive_weight(nll_loss, g_loss, last_layer=last_layer)
             except RuntimeError:
@@ -133,17 +162,20 @@ class VQLPIPSWithDiscriminator(nn.Module):
                 d_weight = torch.tensor(0.0)
 
             disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
-            loss = nll_loss + d_weight * disc_factor * g_loss + self.codebook_weight * codebook_loss.mean()
+            '''
+            #d_weight * disc_factor * 
+            loss = nll_loss + g_loss + self.codebook_weight * codebook_loss.mean()
 
             log = {"{}/total_loss".format(split): loss.clone().detach().mean(),
                    "{}/quant_loss".format(split): codebook_loss.detach().mean(),
                    "{}/nll_loss".format(split): nll_loss.detach().mean(),
                    "{}/rec_loss".format(split): rec_loss.detach().mean(),
-                   "{}/p_loss".format(split): p_loss.detach().mean(),
-                   "{}/d_weight".format(split): d_weight.detach(),
-                   "{}/disc_factor".format(split): torch.tensor(disc_factor),
+                   #"{}/p_loss".format(split): p_loss.detach().mean(),
+                   #"{}/d_weight".format(split): d_weight.detach(),
+                   #"{}/disc_factor".format(split): torch.tensor(disc_factor),
                    "{}/g_loss".format(split): g_loss.detach().mean(),
                    }
+            
             if predicted_indices is not None:
                 assert self.n_classes is not None
                 with torch.no_grad():
