@@ -35,6 +35,15 @@ class HPosterior(object):
         self.latent_channels = latent_channels
 
     def q_given_te(self, t, s, shape, zeta_t_star=None):
+        '''
+        Input : 
+            1. timesteps t, s : where t > s  
+            2. zeta_t_star : standard deviation at timepoint s
+        Return : 
+            hyperparameters : scale and variance according to the Variance Preserving (VP) schedule 
+                              for the conditional distribution q(z_t | z_s)
+        '''
+        ##get variance and scale alpha for s
         if zeta_t_star is not None:  
             alpha_s = torch.sqrt(1 - zeta_t_star**2)
             var_s = zeta_t_star**2
@@ -43,14 +52,25 @@ class HPosterior(object):
             else: m = s.shape[0]
             var_s = (self.model.sqrt_one_minus_alphas_cumprod[s].reshape(m, 1 ,1 ,1))**2 
             alpha_s = torch.sqrt(1 - var_s)
-            
+
+        ##get variance and scale alpha for t  
         var_t = (self.model.sqrt_one_minus_alphas_cumprod[t])**2 
         alpha_t = torch.sqrt(1 - var_t)
+
+        ##calculate the hyperparameters for conditional distribution q(z_t | z_s)
         alpha_t_s = alpha_t.reshape(len(var_t), 1 ,1 ,1) /  alpha_s
         var_t_s = var_t.reshape(len(var_t), 1 ,1 ,1) - alpha_t_s**2 * var_s 
         return alpha_t_s, torch.sqrt(var_t_s)
 
     def qpos_given_te(self, t, s, t_star, z_t_star, z_t, zeta_T_star=None): 
+        '''
+        Input : 
+            1. timesteps t, s, t_star : where t > s > t_star
+            2. z_t_star : sample at timestep t_star 
+            3. z_t : sample at timestep t,  
+        Return : hyperparameters of conditional q(z_s | z_t, z_{T_e})
+
+        '''
         alpha_t_s, scale_t_s = self.q_given_te(t, s, z_t_star.shape)
         alpha_s_t_star, scale_s_t_star = self.q_given_te(s, t_star, z_t_star.shape, zeta_T_star)
 
@@ -65,7 +85,9 @@ class HPosterior(object):
         setattr(self, name, attr)
 
     def get_error(self,x,t,c, unconditional_conditioning, unconditional_guidance_scale):
-
+        '''
+        Error prediction based on classifier free guidance
+        '''
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
             e_t = self.model.apply_model(x.float(), t, c) 
         else:
@@ -78,6 +100,9 @@ class HPosterior(object):
         return e_t
 
     def descretize(self, rho):
+        '''
+        Descretize latent time points based on EDM paper [Karras et al 2022]
+        '''
         #Get time descretization for prior loss (t > T_e)
         self.timesteps_1000 = time_descretization(sigma_min=0.002, sigma_max = 0.999, rho = rho, num_t_steps = 1000)*1000
         self.timesteps_1000 = self.timesteps_1000.cuda().long()
@@ -99,24 +124,39 @@ class HPosterior(object):
         self.register_buffer('h_sigmas', h_sigmas)
 
     def init(self, img, std_scale, mean_scale, prior_scale, mean_scale_top = 0.1):
+        '''
+        Initiliaze variational parameters across different levels in heirarchy
+        Input: 
+            1. image : encoded observation y
+            2. std_scale, mean_scale, prior_scale, mean_scale_top : scaling hyperparameters to scale the std, mean, and gamma 
+                                                                    across different hierarchies. 
+        Output: 
+            initializations to std, mean, and gamma : array of size 
+                                                    [num_h_steps,self.latent_size, self.latent_size, self.latent_channels ]                                             
+        '''
         num_h_steps = len(self.t_steps_hierarchy)
         img  = torch.Tensor.repeat(img,[num_h_steps,1,1,1])[:num_h_steps]
-        #sigmas = self.h_sigmas[...,None, None, None].expand(img.shape) 
         sigmas = torch.zeros_like(img)
         sqrt_alphas = torch.sqrt(self.h_alphas)[...,None, None, None].expand(img.shape) 
-        sqrt_one_minus_alphas = torch.sqrt(1 - self.h_alphas)[...,None, None, None].expand(img.shape) 
+        sqrt_one_minus_alphas = torch.sqrt(1 - self.h_alphas)[...,None, None, None].expand(img.shape)
+        
         ## Variances for posterior
         sigmas[0] = self.h_sigmas[0, None, None, None].expand(img[0].shape) 
         sigmas[1:] = std_scale * (1/np.sqrt(self.eta)) * self.h_sigmas[1:, None, None, None].expand(img[1:].shape)
         logvar_pos = 2*torch.log(sigmas).float()
+
         ## Means :  
         mean_pos = sqrt_alphas*img + mean_scale*sqrt_one_minus_alphas* torch.randn_like(img) 
         mean_pos[0] = img[0] + mean_scale_top*torch.randn_like(img[0])
+
         ## Gammas for posterior weighing between prior and posterior
         gamma = torch.tensor(prior_scale)[None,None,None,None].expand(img.shape).cuda() 
         return  mean_pos, logvar_pos, gamma.float()
     
     def get_kl(self,mu1, mu2, scale1, scale2, wt):
+        '''
+        Function to compute KL between two distributions with means mu1, mu2 and std scale1 and scale2 resp.
+        '''
         return wt*(1/2*scale2**2)*(mu1 - mu2)**2 \
             + torch.log(scale2/scale1) + scale1**2/(2*scale2**2) - 1/2
         
@@ -124,12 +164,15 @@ class HPosterior(object):
                     unconditional_conditioning=None, 
                     unconditional_guidance_scale=1,  K=10, intermediate_mus=None):
         '''
-        This function gets the kl between q(x_{T_e})||p(x_T_e) ) = E_{t>T*_e}[(x_T_e - \mu_\theta(x_t))^2]
-        x_T_e = z_t_star, samples from q(x_{T_e})
-        Sample z_t by adding noise scaled by sqrt(\sigma_t^2 - \zeta_t^2) so that z_t matches total noise at t
+        Input: 
+            1. variational parameters mu_pos, and logvar_pos for q(z_{T_e})
+            2. cond : label condition for conditional image generation
+            3. unconditional_conditioning & unconditional_guidance_scale : classifier free guidance hyperparameters
+            4. K : samples to draw from posterior q(z_{T_e})
+        This function returns the kl between q(z_{T_e})||p(z_T_e) ) = E_{t>T*_e}[(x_T_e - \mu_\theta(x_t))^2]
         '''
         t_e =  self.t_steps_hierarchy[0]
-        ## Sample z_{T_e}
+        ## Sample z_{T_e} from q(x_{T_e})
         tau_te = torch.exp(0.5*logvar_pos) 
         mu_te = torch.Tensor.repeat(mu_pos, [K,1,1,1])
         z_te = torch.sqrt(1 - tau_te**2 )* mu_te + tau_te * torch.randn_like(mu_te) 
@@ -163,6 +206,7 @@ class HPosterior(object):
         pos_mean, pos_scale = self.qpos_given_te(t_cur, t_prev, t_e, z_te, z_t, tau_te)
         prior_mean, prior_scale = self.qpos_given_te(t_cur, t_prev, t_e, mu_t_hat, z_t, None)
 
+        #Compute KL
         wt = (1000-t_e)/2
         kl = self.get_kl(pos_mean, prior_mean,pos_scale, prior_scale, wt=1)
         kl = torch.mean(wt*kl, dim=[1,2,3])
@@ -170,6 +214,14 @@ class HPosterior(object):
         return {"loss" : kl, "sample" : z_te, "intermediate_mus" : intermediate_mus}
 
     def recon_loss(self, samples_pixel, x0_pixel, mask_pixel, operator=None):
+        '''
+        Input : 
+            1. samples_pixel : samples from variational posterior in the data space
+            2. x0_pixel : observation in the data space, same as y
+            3. mask_pixel : mask for the input observation
+        Return : 
+            The reconstruction loss, nll_loss : mse(samples_pixel*mask_pixel, x0_pixel*mask_pixel)
+        '''
         global_step = 0
         if self.first_stage == "kl":
             nll_loss, _ = self.vae_loss(x0_pixel, samples_pixel, mask_pixel, 0, global_step,
@@ -183,6 +235,9 @@ class HPosterior(object):
         return { "loss" : nll_loss}
 
     def prior_preds(self, z_t, t_cur, cond, a_t, a_prev, sigma_t, unconditional_conditioning, unconditional_guidance_scale ):
+        '''
+        Follow the prior diffusion model to predict z at time t_prev and also return prediction at z0
+        '''
         #Get e, pred_x0
         e_out = self.get_error(z_t, t_cur, cond, unconditional_conditioning, unconditional_guidance_scale)
         pred_x0 = (z_t - torch.sqrt(1 - a_t)  * e_out) / a_t.sqrt()
@@ -192,6 +247,9 @@ class HPosterior(object):
         return z_next, pred_x0
 
     def posterior_mean(self, mu_pos, mu_prior, gamma):
+        '''
+        Return a linear combination between mu_pos and mu_prior, weighted by gamma
+        '''
         wt = torch.sigmoid(gamma)
         mean_t_1 = wt*mu_prior + (1-wt)*mu_pos
         return mean_t_1   
@@ -204,7 +262,10 @@ class HPosterior(object):
                     unconditional_conditioning=None, 
                     unconditional_guidance_scale=1, 
                      K=10, iteration=0, to_sample = False, intermediate_mus=None):
-        
+        '''
+        Given the posterior distribution with parameters (mu_pos, logvar_pos, gamma,) and samples z_t from posterior at time {T_e},
+        Return the KL loss, a.k.a hierarchical loss and return clean samples from the posterior 
+        '''
         sigma_pos = torch.exp(0.5*logvar_pos)
         kl_t, t0, q_entropy = torch.zeros(z_t.shape[0]).cuda(), 100, 0
         num_steps = len(self.t_steps_hierarchy)
@@ -216,12 +277,14 @@ class HPosterior(object):
             intermediate_samples[0] = to_img(recon)[0]
         
         alphas = self.h_alphas 
+        #Iterate over timepoints in hierarchy
         for i, (t_cur, t_next) in enumerate(zip(self.t_steps_hierarchy[:-1], self.t_steps_hierarchy[1:])):
             t_hat_cur = torch.ones(b).cuda() * (t_cur ) 
             a_t =  torch.full((b, 1, 1, 1), alphas[i]).cuda()
             a_prev = torch.full((b, 1, 1, 1), alphas[i+1]).cuda()
             a_t_prev = a_t/a_prev
             sigma_t = self.h_sigmas[i+1] 
+            
             #Get prior predictions
             z_next, pred_x0 = self.prior_preds(z_t.float(), t_hat_cur, cond, a_t, a_prev, sigma_t,
                                                        unconditional_conditioning, unconditional_guidance_scale)
@@ -233,6 +296,7 @@ class HPosterior(object):
 
             ## Sample z_t
             z_t =  pos_mean + std_pos * torch.randn_like(pos_mean) 
+            
             #Get kl 
             kl = self.get_kl(pos_mean, z_next, std_pos, std_prior, wt=1)
             kl_t += torch.mean(kl, dim=[1,2,3])
@@ -273,6 +337,9 @@ class HPosterior(object):
                unconditional_conditioning=None, unconditional_guidance_scale=1, 
                batch_size=10, dir_name="temp/", temp=1, 
                samples_iteration=0, operator = None):
+        '''
+        After fitting the variational posterior, we adapt DPS gradient updates to generate samples in [0, T_s]
+        '''
         sigma_pos = torch.exp(0.5*logvar_pos)
         t0 = 100 
         num_steps = len(self.t_steps_hierarchy)
@@ -286,11 +353,13 @@ class HPosterior(object):
         t0 = time.time()
         save_dir = os.path.join(dir_name , "samples_50_"+ str(scale) ) #50_ #"samples_" + str(scale)
         os.makedirs(save_dir, exist_ok=True)
+        #Iterate over batches
         for _ in trange(n_samples // batch_size, desc="Sampling Batches"):
+            ##sample z_{T_e}
             mu_10 = torch.Tensor.repeat(mu_pos[0], [batch_size,1,1,1])
             tau_t = sigma_pos[0]
             z_t = torch.sqrt(1 - tau_t**2 )* mu_10 + tau_t * torch.randn_like(mu_10) 
-            ##Sample from posterior
+            ##Sample from posterior < T_e
             with torch.no_grad():
                 recon = self.model.decode_first_stage(z_t)
                 intermediate_samples[0] = to_img(recon)[0]
@@ -304,7 +373,6 @@ class HPosterior(object):
                     z_next, pred_x0 = self.prior_preds(z_t.float(), t_hat_cur, cond, a_t, a_prev, sigma_t, 
                                                        unconditional_conditioning, unconditional_guidance_scale)
                     ##Posterior means and variances 
-                    # a_prev.sqrt()*                  
                     mean_t_1 = self.posterior_mean(a_prev.sqrt()*mu_pos[i+1].unsqueeze(0), z_next, gamma[i+1].unsqueeze(0))
                     std_pos = sigma_pos[i+1]
                     #Sample z_t
@@ -374,7 +442,14 @@ class HPosterior(object):
             unconditional_conditioning=None, dir_name = None, kl_weight_1=50, kl_weight_2 = 50,
             debug=False, wdb=False, iterations=200, batch_size = 10, lr_init_gamma=0.01, 
             operator=None): 
-                
+        '''
+        Input: 
+            1. lambda_ : inital variational params
+            2. y, mask_pixel : observation with its mask 
+            3. cond : label condition for conditional image generation
+        Function optimizing variational parameters according to the VLB; saving in dir_name
+        '''
+        #use wandb for debugging 
         if wdb: 
             wandb.init(project='LDM', dir = '/scratch/sakshi/wandb-cache')
             wandb.config.run_type = 'hierarchical'
@@ -382,32 +457,39 @@ class HPosterior(object):
 
         params_to_fit = params_train(lambda_) 
         mu_pos, logvar_pos, gamma = params_to_fit
+        ##Return adam optimizer
         optimizers, schedulers = get_optimizers(mu_pos, logvar_pos, gamma, lr_init_gamma)
         rec_loss_all, prior_loss_all, posterior_loss_all =[], [], []
         loss_all = []
         mu_all, logvar_all, gamma_all = [], [], []
+
+        #Iterate in total number of optimization iterations
         for k in range(iterations):
             if k%100==0: print(k)
             intermediate_mus = np.zeros((len(self.t_steps_hierarchy), self.latent_size, self.latent_size, self.latent_channels))
 
             for opt in optimizers: opt.zero_grad()
+
+            #Compute diffusion loss
             stats_prior = self.loss_prior(mu_pos[0], logvar_pos[0], cond=cond, 
                                           unconditional_conditioning=unconditional_conditioning, 
                                           unconditional_guidance_scale=unconditional_guidance_scale, 
                                           K=batch_size, intermediate_mus=intermediate_mus)
             #stats_posterior = self.get_z0_t(stats_prior["sample"], self.t_steps_hierarchy)
+            #Compute hierarchical loss
             stats_posterior = self.loss_posterior(stats_prior["sample"], mu_pos[1:], logvar_pos[1:], gamma[1:],
                                                   cond=cond,
                                                     unconditional_conditioning=unconditional_conditioning, 
                                                     unconditional_guidance_scale=unconditional_guidance_scale, 
                                                     K=batch_size, iteration=k, intermediate_mus=stats_prior["intermediate_mus"])
             sample = self.model.decode_first_stage(stats_posterior["sample"])
-            
+            #Compute reconstruction loss
             stats_recon = self.recon_loss(sample, y, mask_pixel, operator)
             num_pixels = 3*256*256 #(1000/num_pixels)* (1000/num_pixels)*
             loss_total = torch.mean(kl_weight_1*stats_prior["loss"] \
                                     + kl_weight_2*stats_posterior["loss"] + stats_recon["loss"] ) #
             loss_total.backward()
+            ##Update variational parameters
             for opt in optimizers: opt.step()
             for sch in schedulers: sch.step()
             
@@ -419,6 +501,8 @@ class HPosterior(object):
             gamma_all.append(torch.mean(torch.sigmoid(gamma).detach()).item())                   
             sample_np = to_img(sample).astype(np.uint8)
             loss_all.append(loss_total.detach().item())
+
+            #Log onto wandb
             if wdb:
                 wandb.log(dict(total_loss=loss_total.detach().item(),
                             kl = torch.mean(kl_weight_1*stats_prior["loss"]).detach().item(),
@@ -458,7 +542,7 @@ class HPosterior(object):
             gc.collect()
         return 
     
-##unconditional samplinng for debugging purposes:
+##unconditional sampling for debugging purposes:
 '''
     def sample_T(self, x0, cond, unconditional_conditioning, unconditional_guidance_scale , eta=0.4, t_steps_hierarchy=None, dir_="out_temp2"):
         ''

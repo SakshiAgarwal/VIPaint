@@ -1,3 +1,4 @@
+#dataset configurations 
 data:
   name: ldm.data.imagenet.ImageNetValidation
   seq: {'half': [200, 300], 'box': [300, 350], 'random': [400,500]} #[400,500] #[350, 450], #, 'val': "random" : [350, 450], half : , val: [0,50]
@@ -8,19 +9,19 @@ data:
   latent_size: 64
   latent_channels: 3
 
+#Pre-trained Model configs
 autoencoder: /scratch/sakshi/diffusion_inpainting/models/first_stage_models/vq-f4/config.yaml
 diffusion: configs/latent-diffusion/cin256-v2.yaml
 diffusion_model: /scratch/sakshi/diffusion_inpainting/models/ldm/cin256-v2/model.ckpt
 working_dir: results/imagenet
 conditional_model: True
-  
-name: inpainting
 
+#Inference task  
+name: inpainting
 measurement:
   operator:
     in_shape: !!python/tuple [1, 3, 256, 256]
     scale_factor: 4
-  
   noise: 
     name: gaussian
     sigma: 0.05
@@ -31,15 +32,16 @@ mask_opt:
   mask_prob_range: !!python/tuple [0.2, 0.21]  # [0.3, 0.7] for random
   image_size: 256
 
+#Saved test mask files
 mask_files: {'random': masks/mask_100_imagenet.npy, "half": masks/mask_random_half_100_imagenet.npy, 
               "box": masks/box_100_imagenet.npy } # validation files : {'random': masks/mask_20_imagenet.npy, "half": masks/mask_random_half_20_imagenet.npy } 
 
+#Variational Posterior 
 posterior: "gauss" #hierarchical, gauss
 name: ldm.guided_diffusion.loss_vq.VQLPIPSWithDiscriminator
-
 gauss: 
   first_stage: vq
-  unconditional_guidance_scale: 1
+  unconditional_guidance_scale: 1 
   eta: 0.2 
   beta: 200 
   batch_size: 5
@@ -51,23 +53,26 @@ gauss:
   mean_scale_top: 0.8
 
 hierarchical: 
-  first_stage: vq
-  unconditional_guidance_scale: 1
-  eta: 0.2 
-  beta_1: 100 #70 #700, prior
-  beta_2: 100 #70 #700, posterior
-  batch_size: 5
-  iterations: 50 #250
-  t_steps_hierarchy: [550, 400]  #  500, 450,  500, 450, 500, 450, 
-  rho: 7
-  lr_init_gamma: 0.01
+  first_stage: vq #for decoder loss as was used for pre-training
+  unconditional_guidance_scale: 1 #classifier-free guidance scale
+  eta: 0.2 #scale factor in between [0,1] determining amount of noise added to samples during reverse process
+  beta_1: 100 #coefficient for hierarchical loss
+  beta_2: 100 #coefficient for diffusion loss
+  batch_size: 5 #numer of posterior samples to draw each iteration to calculate loss
+  iterations: 50 #total number of optimization iterations
+  t_steps_hierarchy: [550, 400]  #timesteps on which posterior is defined on
+  rho: 7 #hyperparameter for descritizing latent time points, taken from EDM [Karras et. al 2022]
+  #hyperparameters for initializing var. params
+  lr_init_gamma: 0.01 
   mean_scale : 1
   mean_scale_top: 0.8 
 
+#addn. hyperparams for initializing var. params
 init:
   var_scale: 0.7
   prior_scale: 5 # 4
 
+#after fitting the posterior, sampling hyperparameters following DPS
 sampling:
   method: ps
   scale:  2

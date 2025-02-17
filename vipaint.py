@@ -46,7 +46,6 @@ def main():
     # Load model
     config = OmegaConf.load(inpaint_config['diffusion'])
     vae_config = OmegaConf.load(inpaint_config['autoencoder'])
-
     diff = instantiate_from_config(config.model)
     diff.load_state_dict(torch.load(inpaint_config['diffusion_model'],
                                      map_location='cpu')["state_dict"], strict=False)    
@@ -84,6 +83,7 @@ def main():
             )
         
     #mask = torch.tensor(np.load("masks/mask_" + str(args.id) + ".npy")).to(device)
+    ##Define variational posterior on latent time steps
     posterior = inpaint_config['posterior']
     if args.k_steps == 1: 
         posterior = "gauss"
@@ -122,8 +122,6 @@ def main():
     imgs = [0, 19, 15, 13, 11]
     for i, random_num in enumerate(seq):
         #Prepare working directory
-        #0: 50, 3:0, 2: 1, 1: 3
-        #random_num - start
         if i<0: continue
         if i>=1: break
         img_path = os.path.join(out_path, str(i) )  # +str(args.k_steps) + "_h" #"Loss-ablation"
@@ -135,7 +133,7 @@ def main():
         bs = inpaint_config[posterior]["batch_size"]
         logger.info(f"Inference for image {random_num - start}")
 
-        #Get Image/Labels
+        #Get Image & Labels
         if len(loader.dataset) ==2: 
             ref_img = loader.dataset["images"][random_num].reshape(1,channels, x_size, x_size)
             ref_img = np.transpose( ref_img , [0, 2,3,1])
@@ -155,16 +153,14 @@ def main():
         if  os.path.exists(inpaint_config['mask_files'][mask_type]):
             #+50 for random_all case, imagenet +50
             mask = torch.tensor(mask_gen[(random_num)%100].reshape(1,1,256,256)).to(device).float()
-            #y = pil_to_tensor(Image.open("/scratch/latent_results/"+str(args.case)+ "/qavi/" +str(i)+"/observed.png")).unsqueeze(0).float().cuda()/127.5 - 1
-            #mask = torch.ones_like(y)
-            #mask[torch.where(y==0.0039)] = 0
-            #mask[torch.where(y==-0.0039)] = 0
         else: 
             mask = torch.tensor(mask_gen(ref_img)).to(device)
-         
         ref_img = torch.permute(ref_img, (0,3,1,2)) 
+
+        #Get degraded image
         y = torch.Tensor.repeat(mask*ref_img, [bs,1,1,1]).float()
         
+        #Pass y through the encoder  
         if inpaint_config[posterior]["first_stage"] == "kl" : 
             y_encoded = encoder_kl(diff, y)[0]
         else: 
@@ -173,11 +169,11 @@ def main():
         plt.imsave(os.path.join(img_path, 'true.png'), to_img(ref_img).astype(np.uint8)[0])
         plt.imsave(os.path.join(img_path, 'observed.png'), to_img(y).astype(np.uint8)[0])
         
+        #Use encoded y for initiliazing variational parameters
         lambda_ = h_inpainter.init(y_encoded, inpaint_config["init"]["var_scale"], 
                                 inpaint_config[posterior]["mean_scale"], inpaint_config["init"]["prior_scale"],
                                 inpaint_config[posterior]["mean_scale_top"])
         # Fit posterior once
-        
         h_inpainter.fit(lambda_ = lambda_, cond=c, shape = (bs, *y_encoded.shape[1:]),
                 quantize_denoised=False, mask_pixel = mask, y =y,
                 log_every_t=25, iterations = inpaint_config[posterior]['iterations'],
@@ -191,7 +187,6 @@ def main():
                 )  
         
         # Load parameters and sample
-        #for j in [0,50, 100, 150, 200, 249]:
         params_path = os.path.join(img_path, 'params', f'{inpaint_config[posterior]["iterations"]}.pt') #, j+1
         [mu, logvar, gamma] = torch.load(params_path)
         
